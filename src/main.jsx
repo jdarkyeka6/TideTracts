@@ -3,52 +3,42 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./styles.css";
 
-// TideTracts uses the same username-first login flow as Wavo. App.jsx still
-// renders the legacy email control, so keep the live DOM aligned with the
-// actual auth behaviour until that component is folded into the next cleanup.
+// App.jsx still renders the legacy email-shaped control. Convert it once after
+// React mounts it. Do not keep observing/re-writing the input attributes while
+// the user types, because changing an input's type can reset its caret and make
+// characters appear in reverse order.
 function installWavoLoginFieldCompat() {
-  let scheduled = false;
-
-  const update = () => {
-    scheduled = false;
+  const makeUsernameField = () => {
     const input = document.querySelector('.login-card input[autocomplete="email"], .login-card input[data-wavo-login]');
-    if (!input) return;
+    if (!input) return false;
 
-    if (input.type !== "text") input.type = "text";
-    if (input.autocomplete !== "username") input.autocomplete = "username";
-    if (input.placeholder !== "Username") input.placeholder = "Username";
-    if (input.dataset.wavoLogin !== "true") input.dataset.wavoLogin = "true";
+    input.type = "text";
+    input.autocomplete = "username";
+    input.placeholder = "Username";
+    input.dataset.wavoLogin = "true";
 
     const label = input.closest("label");
-    if (label?.firstChild?.nodeType === Node.TEXT_NODE && label.firstChild.nodeValue !== "Username") {
+    if (label?.firstChild?.nodeType === Node.TEXT_NODE) {
       label.firstChild.nodeValue = "Username";
     }
 
     const form = input.closest("form");
-    if (form && !form.noValidate) form.noValidate = true;
+    if (form) form.noValidate = true;
+    return true;
   };
 
-  const scheduleUpdate = () => {
-    if (scheduled) return;
-    scheduled = true;
-    queueMicrotask(update);
-  };
+  if (makeUsernameField()) return;
 
-  const observer = new MutationObserver(scheduleUpdate);
-  observer.observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ["type", "autocomplete", "placeholder", "data-wavo-login", "novalidate"],
+  const observer = new MutationObserver(() => {
+    if (makeUsernameField()) observer.disconnect();
   });
-
-  scheduleUpdate();
+  observer.observe(document.documentElement, { childList: true, subtree: true });
 }
-
-installWavoLoginFieldCompat();
 
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <App />
   </React.StrictMode>
 );
+
+installWavoLoginFieldCompat();
