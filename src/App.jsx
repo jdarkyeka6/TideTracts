@@ -330,7 +330,7 @@ function PdfPlacement({ file, signatureField, showSignature, textFields, onSigna
           </label>
           <label className="field-width">
             <span>Width</span>
-            <input type="range" min="0.12" max="0.8" step="0.02" value={selectedText.width || DEFAULT_TEXT_FIELD.width} onChange={(e) => patchTextField(selectedText.id, { width: Number(e.target.value) })} />
+            <input type="range" min="0.04" max="0.8" step="0.01" value={selectedText.width || DEFAULT_TEXT_FIELD.width} onChange={(e) => { const width = Number(e.target.value); patchTextField(selectedText.id, { width, x: Math.min(Number(selectedText.x || 0), 1 - width) }); }} />
           </label>
           <label className="field-height">
             <span>Height</span>
