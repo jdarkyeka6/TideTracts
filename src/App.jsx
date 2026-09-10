@@ -332,6 +332,10 @@ function PdfPlacement({ file, signatureField, showSignature, textFields, onSigna
             <span>Width</span>
             <input type="range" min="0.12" max="0.8" step="0.02" value={selectedText.width || DEFAULT_TEXT_FIELD.width} onChange={(e) => patchTextField(selectedText.id, { width: Number(e.target.value) })} />
           </label>
+          <label className="field-height">
+            <span>Height</span>
+            <input type="range" min="0.015" max="0.15" step="0.005" value={selectedText.height || DEFAULT_TEXT_FIELD.height} onChange={(e) => { const height = Number(e.target.value); patchTextField(selectedText.id, { height, y: Math.min(Number(selectedText.y || 0), 1 - height) }); }} />
+          </label>
           <label className="required-switch">
             <input type="checkbox" checked={selectedText.required !== false} onChange={(e) => patchTextField(selectedText.id, { required: e.target.checked })} />
             <span>Required</span>
