@@ -2,13 +2,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as pdfjs from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { SIGN_FUNCTION_URL, signInWithWavo, supabase } from "./supabase";
+import "./text-fields.css";
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 const DEFAULT_FIELD = { page: 1, x: 0.62, y: 0.78, width: 0.28, height: 0.1 };
+const DEFAULT_TEXT_FIELD = { page: 1, x: 0.56, y: 0.4, width: 0.3, height: 0.055 };
 const MAX_PDF_BYTES = 15 * 1024 * 1024;
 const MAX_PACKET_BYTES = 50 * 1024 * 1024;
 const MAX_DOCUMENTS = 10;
+const MAX_TEXT_FIELDS = 30;
 
 function route() {
   const match = window.location.pathname.match(/^\/sign\/([0-9a-f-]{36})$/i);
@@ -94,8 +97,8 @@ function Login({ onSignedIn }) {
       <section className="login-card">
         <div className="login-brand"><span className="brand-mark">T</span><strong>TideTracts</strong></div>
         <span className="eyebrow">Powered by your Wavo account</span>
-        <h1>Send PDFs.<br />Get them signed.</h1>
-        <p>Create one clean packet with everything the other person needs to read and sign.</p>
+        <h1>Send PDFs.<br />Get them done.</h1>
+        <p>Bundle documents, add fillable text spots, and only require signatures where they actually belong.</p>
         <form onSubmit={submit} className="stack" noValidate>
           <label>Username<input type="text" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" placeholder="Username" required /></label>
           <label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" placeholder="Password" required /></label>
@@ -112,7 +115,8 @@ function packetCounts(contract) {
   return {
     docs,
     count: docs.length || 1,
-    required: docs.filter((d) => d.requires_signature).length || (docs.length ? 0 : 1),
+    signatures: docs.filter((d) => d.requires_signature).length || (docs.length ? 0 : 1),
+    fields: docs.reduce((sum, d) => sum + (Array.isArray(d.text_fields) ? d.text_fields.length : 0), 0),
   };
 }
 
@@ -124,7 +128,7 @@ function Home({ user }) {
   useEffect(() => {
     if (!user) return;
     supabase.from("tidetracts_contracts")
-      .select("id,title,status,signer_name,share_token,signed_name,signed_at,created_at,tidetracts_documents(id,file_name,requires_signature,completed_path,original_path,position)")
+      .select("id,title,status,signer_name,share_token,signed_name,signed_at,created_at,tidetracts_documents(id,file_name,requires_signature,text_fields,completed_path,original_path,position)")
       .order("created_at", { ascending: false })
       .then(({ data, error: queryError }) => {
         if (queryError) setError(queryError.message);
@@ -148,9 +152,9 @@ function Home({ user }) {
     <main className="page dashboard-page">
       <section className="hero-row">
         <div>
-          <span className="eyebrow">PDF packets and e-signing</span>
+          <span className="eyebrow">PDF packets, fields and e-signing</span>
           <h1>Your TideTracts</h1>
-          <p>Keep the paperwork together. Make only the documents that need a signature require one.</p>
+          <p>Send a packet that can be read, filled in, signed, or all three.</p>
         </div>
         <button className="primary hero-button" onClick={() => go("/new")}>Create packet</button>
       </section>
@@ -171,13 +175,13 @@ function Home({ user }) {
                 <div className="packet-icon"><span>PDF</span><i>{counts.count}</i></div>
                 <div className="contract-copy">
                   <div className="card-head"><h3>{c.title}</h3><span className={`status ${c.status}`}>{c.status}</span></div>
-                  <p>{counts.count} PDF{counts.count === 1 ? "" : "s"} · {counts.required} require{counts.required === 1 ? "s" : ""} signature</p>
-                  <small>{c.status === "completed" ? `${c.signed_name ? `Completed by ${c.signed_name} · ` : "Completed · "}${formatDate(c.signed_at)}` : `${c.signer_name ? `Waiting for ${c.signer_name} · ` : "Waiting for signature · "}${formatDate(c.created_at)}`}</small>
+                  <p>{counts.count} PDF{counts.count === 1 ? "" : "s"} · {counts.signatures} signature{counts.signatures === 1 ? "" : "s"} · {counts.fields} text field{counts.fields === 1 ? "" : "s"}</p>
+                  <small>{c.status === "completed" ? `${c.signed_name ? `Completed by ${c.signed_name} · ` : "Completed · "}${formatDate(c.signed_at)}` : `${c.signer_name ? `Waiting for ${c.signer_name} · ` : "Waiting for recipient · "}${formatDate(c.created_at)}`}</small>
                   {counts.docs.length > 0 && (
                     <div className="document-pills">
                       {counts.docs.slice(0, 4).map((doc) => (
                         <button key={doc.id} onClick={() => openDocument(doc)} title={doc.file_name}>
-                          <span>{doc.requires_signature ? "✍" : "👁"}</span>{doc.file_name}
+                          <span>{doc.requires_signature ? "✍" : (doc.text_fields?.length ? "T" : "👁")}</span>{doc.file_name}
                         </button>
                       ))}
                       {counts.docs.length > 4 && <span className="more-pill">+{counts.docs.length - 4}</span>}
@@ -196,12 +200,24 @@ function Home({ user }) {
   );
 }
 
-function PdfPlacement({ file, field, onField }) {
+function normalizeField(field) {
+  return {
+    page: Math.max(1, Number(field?.page || 1)),
+    x: Number.isFinite(Number(field?.x)) ? Number(field.x) : DEFAULT_TEXT_FIELD.x,
+    y: Number.isFinite(Number(field?.y)) ? Number(field.y) : DEFAULT_TEXT_FIELD.y,
+    width: Number.isFinite(Number(field?.width)) ? Number(field.width) : DEFAULT_TEXT_FIELD.width,
+    height: Number.isFinite(Number(field?.height)) ? Number(field.height) : DEFAULT_TEXT_FIELD.height,
+  };
+}
+
+function PdfPlacement({ file, signatureField, showSignature, textFields, onSignatureField, onTextFields }) {
   const canvasRef = useRef(null);
   const [pdf, setPdf] = useState(null);
   const [page, setPage] = useState(1);
   const [pages, setPages] = useState(1);
   const [rendering, setRendering] = useState(false);
+  const [tool, setTool] = useState(showSignature ? "signature" : "text");
+  const [selectedTextId, setSelectedTextId] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -212,10 +228,14 @@ function PdfPlacement({ file, field, onField }) {
       if (cancelled) return;
       setPdf(doc);
       setPages(doc.numPages);
-      setPage(Math.min(field.page || 1, doc.numPages));
+      setPage((current) => Math.min(Math.max(1, current), doc.numPages));
     })().catch(console.error);
     return () => { cancelled = true; };
   }, [file]);
+
+  useEffect(() => {
+    if (!showSignature && tool === "signature") setTool("text");
+  }, [showSignature, tool]);
 
   useEffect(() => {
     let cancelled = false;
@@ -236,40 +256,134 @@ function PdfPlacement({ file, field, onField }) {
     return () => { cancelled = true; };
   }, [pdf, page]);
 
-  function place(e) {
+  const selectedText = textFields.find((field) => field.id === selectedTextId) || null;
+
+  function positionFromEvent(e, width, height) {
     const rect = e.currentTarget.getBoundingClientRect();
-    const width = field.width || DEFAULT_FIELD.width;
-    const height = field.height || DEFAULT_FIELD.height;
-    const x = Math.max(0, Math.min(1 - width, (e.clientX - rect.left) / rect.width - width / 2));
-    const y = Math.max(0, Math.min(1 - height, (e.clientY - rect.top) / rect.height - height / 2));
-    onField({ ...field, page, x, y, width, height });
+    return {
+      x: Math.max(0, Math.min(1 - width, (e.clientX - rect.left) / rect.width - width / 2)),
+      y: Math.max(0, Math.min(1 - height, (e.clientY - rect.top) / rect.height - height / 2)),
+    };
+  }
+
+  function place(e) {
+    if (e.target.closest?.(".text-field-box")) return;
+    if (tool === "signature" && showSignature) {
+      const width = signatureField.width || DEFAULT_FIELD.width;
+      const height = signatureField.height || DEFAULT_FIELD.height;
+      const pos = positionFromEvent(e, width, height);
+      onSignatureField({ ...signatureField, page, ...pos, width, height });
+      return;
+    }
+    if (tool === "text" && selectedText) {
+      const f = normalizeField(selectedText);
+      const pos = positionFromEvent(e, f.width, f.height);
+      onTextFields(textFields.map((field) => field.id === selectedText.id ? { ...field, page, ...pos } : field));
+    }
+  }
+
+  function addTextField() {
+    if (textFields.length >= MAX_TEXT_FIELDS) return;
+    const id = crypto.randomUUID();
+    const n = textFields.length + 1;
+    const field = {
+      id,
+      label: `Text field ${n}`,
+      required: true,
+      ...DEFAULT_TEXT_FIELD,
+      page,
+      y: Math.min(0.84, 0.24 + ((n - 1) % 8) * 0.075),
+    };
+    onTextFields([...textFields, field]);
+    setSelectedTextId(id);
+    setTool("text");
+  }
+
+  function patchTextField(id, patch) {
+    onTextFields(textFields.map((field) => field.id === id ? { ...field, ...patch } : field));
+  }
+
+  function removeTextField(id) {
+    onTextFields(textFields.filter((field) => field.id !== id));
+    if (selectedTextId === id) setSelectedTextId(null);
   }
 
   return (
     <div className="placement-wrap">
-      <div className="page-toolbar">
-        <button className="quiet mini" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>←</button>
-        <span>Page {page} of {pages}</span>
-        <button className="quiet mini" disabled={page >= pages} onClick={() => setPage((p) => p + 1)}>→</button>
+      <div className="field-toolbar">
+        <div className="field-tools">
+          {showSignature && <button type="button" className={`field-tool ${tool === "signature" ? "active" : ""}`} onClick={() => { setTool("signature"); setSelectedTextId(null); }}>✍ Signature</button>}
+          <button type="button" className={`field-tool ${tool === "text" ? "active" : ""}`} onClick={addTextField}>＋ Text field</button>
+        </div>
+        <div className="page-toolbar">
+          <button type="button" className="quiet mini" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>←</button>
+          <span>Page {page} of {pages}</span>
+          <button type="button" className="quiet mini" disabled={page >= pages} onClick={() => setPage((p) => p + 1)}>→</button>
+        </div>
       </div>
+
+      {selectedText && (
+        <div className="text-field-settings">
+          <label>
+            <span>Field name</span>
+            <input value={selectedText.label} onChange={(e) => patchTextField(selectedText.id, { label: e.target.value.slice(0, 80) })} placeholder="e.g. Role" />
+          </label>
+          <label className="field-width">
+            <span>Width</span>
+            <input type="range" min="0.12" max="0.8" step="0.02" value={selectedText.width || DEFAULT_TEXT_FIELD.width} onChange={(e) => patchTextField(selectedText.id, { width: Number(e.target.value) })} />
+          </label>
+          <label className="required-switch">
+            <input type="checkbox" checked={selectedText.required !== false} onChange={(e) => patchTextField(selectedText.id, { required: e.target.checked })} />
+            <span>Required</span>
+          </label>
+          <button type="button" className="remove-field" onClick={() => removeTextField(selectedText.id)}>Remove field</button>
+        </div>
+      )}
+
       <div className={`pdf-placement ${rendering ? "rendering" : ""}`} onClick={place}>
         <canvas ref={canvasRef} />
-        <div className="signature-field" style={{ left: `${field.x * 100}%`, top: `${field.y * 100}%`, width: `${field.width * 100}%`, height: `${field.height * 100}%` }}>Signature</div>
+        {showSignature && signatureField.page === page && (
+          <button type="button" className={`signature-field editable ${tool === "signature" ? "selected" : ""}`} onClick={(e) => { e.stopPropagation(); setTool("signature"); setSelectedTextId(null); }} style={{ left: `${signatureField.x * 100}%`, top: `${signatureField.y * 100}%`, width: `${signatureField.width * 100}%`, height: `${signatureField.height * 100}%` }}>Signature</button>
+        )}
+        {textFields.filter((field) => Number(field.page || 1) === page).map((field) => (
+          <button
+            type="button"
+            key={field.id}
+            className={`text-field-box ${selectedTextId === field.id ? "selected" : ""}`}
+            onClick={(e) => { e.stopPropagation(); setTool("text"); setSelectedTextId(field.id); }}
+            style={{ left: `${field.x * 100}%`, top: `${field.y * 100}%`, width: `${field.width * 100}%`, height: `${field.height * 100}%` }}
+          >
+            <span>{field.label || "Text field"}{field.required === false ? "" : " *"}</span>
+          </button>
+        ))}
       </div>
-      <p className="placement-help">Click the PDF to move the signature box.</p>
+      <p className="placement-help">{tool === "signature" ? "Click the PDF to move the signature box." : selectedText ? "Click the PDF to move the selected text field." : "Add a text field, then click where it should go."}</p>
+
+      {textFields.length > 0 && (
+        <div className="field-list">
+          <div className="section-label"><span>Text fields</span><small>{textFields.length}/{MAX_TEXT_FIELDS}</small></div>
+          {textFields.map((field, index) => (
+            <button type="button" key={field.id} className={selectedTextId === field.id ? "active" : ""} onClick={() => { setSelectedTextId(field.id); setTool("text"); setPage(Math.max(1, Number(field.page || 1))); }}>
+              <span className="field-number">{index + 1}</span>
+              <span><strong>{field.label || `Text field ${index + 1}`}</strong><small>Page {field.page || 1} · {field.required === false ? "Optional" : "Required"}</small></span>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
 function DocumentRow({ doc, selected, onSelect, onToggle, onRemove }) {
+  const textCount = doc.textFields?.length || 0;
   return (
     <div className={`document-row ${selected ? "selected" : ""}`}>
       <button className="document-main" onClick={onSelect}>
         <span className="mini-pdf">PDF</span>
-        <span className="document-meta"><strong>{doc.file.name}</strong><small>{formatBytes(doc.file.size)}</small></span>
+        <span className="document-meta"><strong>{doc.file.name}</strong><small>{formatBytes(doc.file.size)}{textCount ? ` · ${textCount} field${textCount === 1 ? "" : "s"}` : ""}</small></span>
       </button>
-      <button className={`sign-toggle ${doc.requiresSignature ? "required" : "review"}`} onClick={onToggle} title="Toggle signing requirement">
-        {doc.requiresSignature ? <><span>✍</span><span>Signature</span></> : <><span>👁</span><span>Review only</span></>}
+      <button className={`sign-toggle ${doc.requiresSignature ? "required" : "review"}`} onClick={onToggle} title="Toggle signature requirement">
+        {doc.requiresSignature ? <><span>✍</span><span>Signature</span></> : <><span>○</span><span>No signature</span></>}
       </button>
       <button className="remove-doc" onClick={onRemove} aria-label={`Remove ${doc.file.name}`}>×</button>
     </div>
@@ -292,8 +406,11 @@ function NewContract({ user }) {
   const [shared, setShared] = useState(false);
 
   const selected = documents.find((d) => d.id === selectedId) || documents[0] || null;
-  const requiredCount = documents.filter((d) => d.requiresSignature).length;
+  const signatureCount = documents.filter((d) => d.requiresSignature).length;
+  const textFieldCount = documents.reduce((sum, d) => sum + (d.textFields?.length || 0), 0);
+  const requiredTextCount = documents.reduce((sum, d) => sum + (d.textFields || []).filter((f) => f.required !== false).length, 0);
   const packetBytes = documents.reduce((sum, d) => sum + d.file.size, 0);
+  const actionable = signatureCount > 0 || textFieldCount > 0;
 
   function addFiles(event) {
     const incoming = Array.from(event.target.files || []);
@@ -310,6 +427,7 @@ function NewContract({ user }) {
       file,
       requiresSignature: true,
       field: { ...DEFAULT_FIELD },
+      textFields: [],
     }));
     const next = [...documents, ...added];
     setDocuments(next);
@@ -330,7 +448,10 @@ function NewContract({ user }) {
 
   async function createContract() {
     if (!user || !documents.length || !title.trim()) return;
-    if (!requiredCount) return setError("Keep at least one PDF set to Signature. Review-only PDFs can be included alongside it.");
+    if (!actionable) return setError("Add at least one signature or text field. A packet with nothing to do is just a folder wearing a suit.");
+    const unnamed = documents.flatMap((d) => d.textFields || []).find((f) => !String(f.label || "").trim());
+    if (unnamed) return setError("Give every text field a name so the recipient knows what to enter.");
+
     setBusy(true);
     setError("");
     const contractId = crypto.randomUUID();
@@ -362,12 +483,22 @@ function NewContract({ user }) {
         original_path: doc.path,
         requires_signature: doc.requiresSignature,
         signature_field: doc.field,
+        text_fields: (doc.textFields || []).map((f) => ({
+          id: f.id,
+          label: String(f.label || "").trim().slice(0, 80),
+          required: f.required !== false,
+          page: Math.max(1, Number(f.page || 1)),
+          x: Number(f.x),
+          y: Number(f.y),
+          width: Number(f.width),
+          height: Number(f.height),
+        })),
         position,
       }));
       const { error: docsError } = await supabase.from("tidetracts_documents").insert(documentRows);
       if (docsError) throw docsError;
 
-      setCreated({ ...contract, documentCount: documents.length, requiredCount });
+      setCreated({ ...contract, documentCount: documents.length, signatureCount, textFieldCount, requiredTextCount });
     } catch (err) {
       if (uploaded.length) await supabase.storage.from("tidetracts-pdfs").remove(uploaded.map((d) => d.path));
       await supabase.from("tidetracts_contracts").delete().eq("id", contractId);
@@ -389,7 +520,8 @@ function NewContract({ user }) {
       token: created.share_token,
       status: "sent",
       documents: created.documentCount,
-      required: created.requiredCount,
+      required: created.signatureCount,
+      fields: created.textFieldCount,
     });
     try {
       if (wavoKind === "dm") {
@@ -416,7 +548,7 @@ function NewContract({ user }) {
           <div className="done-check">✓</div>
           <span className="eyebrow">Packet ready</span>
           <h1>{created.title}</h1>
-          <p>{created.documentCount} PDFs are bundled into one link. {created.requiredCount} require{created.requiredCount === 1 ? "s" : ""} a signature.</p>
+          <p>{created.documentCount} PDFs are bundled into one link. {created.signatureCount} need a signature and {created.textFieldCount} fillable text field{created.textFieldCount === 1 ? "" : "s"} are ready.</p>
           <div className="share-link"><input readOnly value={signUrl} /><button className="quiet" onClick={() => copyText(signUrl)}>Copy</button></div>
           {wavoKind && wavoId && <button className="wavo-button" disabled={busy || shared} onClick={shareToWavo}>{shared ? `Sent to ${wavoName || "Wavo"} ✓` : `Send to ${wavoName ? `@${wavoName}` : "Wavo"}`}</button>}
           <button className="primary" onClick={() => go("/")}>Back to dashboard</button>
@@ -430,7 +562,7 @@ function NewContract({ user }) {
     <main className="page packet-builder">
       <div className="new-head">
         <button className="back" onClick={() => go("/")}>←</button>
-        <div><span className="eyebrow">New TideTract</span><h1>Build a PDF packet</h1><p>Bundle the paperwork. Choose exactly what needs signing.</p></div>
+        <div><span className="eyebrow">New TideTract</span><h1>Build a PDF packet</h1><p>Add PDFs, place text fields, and choose which documents actually need a signature.</p></div>
       </div>
 
       <input ref={fileInput} className="hidden-input" type="file" accept="application/pdf,.pdf" multiple onChange={addFiles} />
@@ -448,8 +580,12 @@ function NewContract({ user }) {
             <section className="setup-card stack">
               <div className="section-label"><span>Packet details</span><small>{documents.length} PDF{documents.length === 1 ? "" : "s"}</small></div>
               <label>Packet name<input value={title} onChange={(e) => setTitle(e.target.value)} maxLength={160} placeholder="Agreement packet" /></label>
-              <label>Who is signing?<input value={signerName} onChange={(e) => setSignerName(e.target.value)} placeholder="Name (optional)" maxLength={120} /></label>
-              <div className="packet-summary"><span><strong>{requiredCount}</strong> to sign</span><span><strong>{documents.length - requiredCount}</strong> review only</span><span><strong>{formatBytes(packetBytes)}</strong> total</span></div>
+              <label>Who is completing it?<input value={signerName} onChange={(e) => setSignerName(e.target.value)} placeholder="Name (optional)" maxLength={120} /></label>
+              <div className="packet-summary">
+                <span><strong>{signatureCount}</strong> signatures</span>
+                <span><strong>{textFieldCount}</strong> text fields</span>
+                <span><strong>{formatBytes(packetBytes)}</strong> total</span>
+              </div>
             </section>
 
             <section className="document-stack-card">
@@ -469,35 +605,32 @@ function NewContract({ user }) {
             </section>
 
             {error && <div className="error">{error}</div>}
-            <button className="primary create-packet" onClick={createContract} disabled={busy || !title.trim() || !documents.length}>{busy ? "Creating packet..." : `Create packet · ${requiredCount} signature${requiredCount === 1 ? "" : "s"}`}</button>
+            <button className="primary create-packet" onClick={createContract} disabled={busy || !title.trim() || !documents.length || !actionable}>
+              {busy ? "Creating packet..." : `Create packet · ${signatureCount ? `${signatureCount} signature${signatureCount === 1 ? "" : "s"}` : `${requiredTextCount} required field${requiredTextCount === 1 ? "" : "s"}`}`}
+            </button>
             {wavoKind && <small className="wavo-hint">After creating, send the whole packet straight back to {wavoName ? `@${wavoName}` : "this Wavo chat"}.</small>}
           </aside>
 
           <section className="preview-card builder-preview">
             <div className="preview-title">
-              <div><strong>{selected?.file.name}</strong><span>{selected?.requiresSignature ? "Place the signature field" : "Review-only document"}</span></div>
-              <span className={`preview-mode ${selected?.requiresSignature ? "required" : "review"}`}>{selected?.requiresSignature ? "Signature" : "Review only"}</span>
+              <div><strong>{selected?.file.name}</strong><span>{selected?.requiresSignature ? "Signature + fillable fields" : (selected?.textFields?.length ? "Fillable fields, no signature" : "Add fields or leave as review-only")}</span></div>
+              <span className={`preview-mode ${selected?.requiresSignature ? "required" : "review"}`}>{selected?.requiresSignature ? "Signature" : "No signature"}</span>
             </div>
-            {selected?.requiresSignature ? (
-              <PdfPlacement file={selected.file} field={selected.field} onField={(field) => patchDocument(selected.id, { field })} />
-            ) : (
-              <ReviewPreview file={selected.file} />
+            {selected && (
+              <PdfPlacement
+                file={selected.file}
+                signatureField={selected.field}
+                showSignature={selected.requiresSignature}
+                textFields={selected.textFields || []}
+                onSignatureField={(field) => patchDocument(selected.id, { field })}
+                onTextFields={(textFields) => patchDocument(selected.id, { textFields })}
+              />
             )}
           </section>
         </div>
       )}
     </main>
   );
-}
-
-function ReviewPreview({ file }) {
-  const [url, setUrl] = useState("");
-  useEffect(() => {
-    const next = URL.createObjectURL(file);
-    setUrl(next);
-    return () => URL.revokeObjectURL(next);
-  }, [file]);
-  return <iframe className="local-pdf-frame" title={file.name} src={url} />;
 }
 
 function SignaturePad({ onChange }) {
@@ -563,10 +696,82 @@ function SignaturePad({ onChange }) {
   return <div className="signature-pad"><canvas ref={canvasRef} onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up} /><button type="button" className="clear-sign" onClick={clear}>Clear</button><span>Sign here</span></div>;
 }
 
+function SigningPdf({ document, values, onValue }) {
+  const canvasRef = useRef(null);
+  const [pdf, setPdf] = useState(null);
+  const [page, setPage] = useState(1);
+  const [pages, setPages] = useState(1);
+  const [rendering, setRendering] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPdf(null);
+    setPage(1);
+    if (!document?.pdfUrl) return undefined;
+    pdfjs.getDocument(document.pdfUrl).promise
+      .then((doc) => {
+        if (cancelled) return;
+        setPdf(doc);
+        setPages(doc.numPages);
+      })
+      .catch(console.error);
+    return () => { cancelled = true; };
+  }, [document?.id, document?.pdfUrl]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!pdf || !canvasRef.current) return;
+      setRendering(true);
+      const p = await pdf.getPage(page);
+      const base = p.getViewport({ scale: 1 });
+      const targetWidth = Math.min(900, Math.max(300, window.innerWidth - 470));
+      const viewport = p.getViewport({ scale: targetWidth / base.width });
+      const canvas = canvasRef.current;
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      canvas.style.aspectRatio = `${viewport.width}/${viewport.height}`;
+      await p.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+      if (!cancelled) setRendering(false);
+    })().catch(() => setRendering(false));
+    return () => { cancelled = true; };
+  }, [pdf, page]);
+
+  const fields = (document?.textFields || []).filter((field) => Number(field.page || 1) === page);
+
+  return (
+    <div className="signing-pdf-wrap">
+      {pages > 1 && (
+        <div className="signing-page-nav">
+          <button type="button" className="quiet mini" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>←</button>
+          <span>Page {page} of {pages}</span>
+          <button type="button" className="quiet mini" disabled={page >= pages} onClick={() => setPage((p) => p + 1)}>→</button>
+        </div>
+      )}
+      <div className={`signing-pdf ${rendering ? "rendering" : ""}`}>
+        <canvas ref={canvasRef} />
+        {fields.map((field) => (
+          <input
+            key={field.id}
+            className={`signer-text-field ${field.required === false ? "optional" : "required"}`}
+            value={values[field.id] || ""}
+            onChange={(e) => onValue(field.id, e.target.value.slice(0, 200))}
+            placeholder={field.label || "Enter text"}
+            aria-label={field.label || "Text field"}
+            style={{ left: `${field.x * 100}%`, top: `${field.y * 100}%`, width: `${field.width * 100}%`, height: `${field.height * 100}%` }}
+          />
+        ))}
+      </div>
+      {fields.length > 0 && <p className="placement-help">Blue fields are part of the document. Fill them in before finishing.</p>}
+    </div>
+  );
+}
+
 function SignContract({ token }) {
   const [contract, setContract] = useState(null);
   const [activeId, setActiveId] = useState(null);
   const [signature, setSignature] = useState("");
+  const [values, setValues] = useState({});
   const [name, setName] = useState("");
   const [agree, setAgree] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -589,20 +794,40 @@ function SignContract({ token }) {
 
   const documents = contract?.documents || [];
   const active = documents.find((d) => d.id === activeId) || documents[0];
-  const requiredCount = documents.filter((d) => d.requiresSignature).length;
+  const signatureCount = documents.filter((d) => d.requiresSignature).length;
+  const allTextFields = documents.flatMap((d) => d.textFields || []);
+  const requiredTextFields = allTextFields.filter((f) => f.required !== false);
+  const missingRequired = requiredTextFields.filter((field) => !String(values[field.id] || "").trim());
+  const completed = contract?.status === "completed";
 
-  async function sign() {
-    if (!signature || !name.trim() || !agree || !requiredCount) return;
+  function setFieldValue(id, value) {
+    setValues((current) => ({ ...current, [id]: value }));
+  }
+
+  function jumpToMissing() {
+    const field = missingRequired[0];
+    if (!field) return;
+    const doc = documents.find((d) => (d.textFields || []).some((f) => f.id === field.id));
+    if (doc) setActiveId(doc.id);
+  }
+
+  async function finish() {
+    if (!name.trim() || !agree) return;
+    if (signatureCount && !signature) return;
+    if (missingRequired.length) {
+      jumpToMissing();
+      return setError(`Fill in "${missingRequired[0].label || "required field"}" before finishing.`);
+    }
     setBusy(true);
     setError("");
     try {
       const response = await fetch(SIGN_FUNCTION_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, signatureData: signature, signedName: name.trim() }),
+        body: JSON.stringify({ token, signatureData: signature || null, signedName: name.trim(), textValues: values }),
       });
       const body = await response.json();
-      if (!response.ok) throw new Error(body.error || "Couldn't finish signing");
+      if (!response.ok) throw new Error(body.error || "Couldn't finish packet");
       setContract((current) => ({ ...current, status: "completed", signedAt: body.signedAt, documents: body.documents || current.documents }));
     } catch (err) {
       setError(err.message);
@@ -614,26 +839,34 @@ function SignContract({ token }) {
   if (error && !contract) return <main className="center-page"><section className="done-card"><div className="done-check bad">!</div><h1>Signing link unavailable</h1><p>{error}</p></section></main>;
   if (!contract) return <main className="center-page"><div className="empty">Opening secure packet...</div></main>;
 
-  const completed = contract.status === "completed";
+  const activeFieldCount = active?.textFields?.length || 0;
 
   return (
     <main className="sign-page">
       <header className="sign-head"><div className="brand static"><span className="brand-mark">T</span><span>TideTracts</span></div><span className="secure-pill">Private packet · {documents.length} PDF{documents.length === 1 ? "" : "s"}</span></header>
       <section className="sign-document">
         <div className="doc-head">
-          <div><span className="eyebrow">{completed ? "Completed packet" : "Review packet"}</span><h1>{contract.title}</h1></div>
-          <span className={`status ${completed ? "completed" : "sent"}`}>{completed ? "completed" : `${requiredCount} to sign`}</span>
+          <div><span className="eyebrow">{completed ? "Completed packet" : "Review and complete"}</span><h1>{contract.title}</h1></div>
+          <span className={`status ${completed ? "completed" : "sent"}`}>{completed ? "completed" : `${signatureCount} signature${signatureCount === 1 ? "" : "s"} · ${requiredTextFields.length} required field${requiredTextFields.length === 1 ? "" : "s"}`}</span>
         </div>
         <div className="sign-tabs">
-          {documents.map((doc, index) => (
-            <button key={doc.id} className={active?.id === doc.id ? "active" : ""} onClick={() => setActiveId(doc.id)}>
-              <span>{index + 1}</span>
-              <strong>{doc.fileName}</strong>
-              <small>{doc.requiresSignature ? (completed ? "Signed" : "Signature required") : "Review only"}</small>
-            </button>
-          ))}
+          {documents.map((doc, index) => {
+            const docFields = doc.textFields || [];
+            const missingHere = docFields.filter((f) => f.required !== false && !String(values[f.id] || "").trim()).length;
+            return (
+              <button key={doc.id} className={active?.id === doc.id ? "active" : ""} onClick={() => setActiveId(doc.id)}>
+                <span>{index + 1}</span>
+                <strong>{doc.fileName}</strong>
+                <small>{completed ? (doc.requiresSignature ? "Signed" : (docFields.length ? "Completed" : "Reviewed")) : (missingHere ? `${missingHere} field${missingHere === 1 ? "" : "s"} left` : doc.requiresSignature ? "Signature required" : docFields.length ? `${docFields.length} text field${docFields.length === 1 ? "" : "s"}` : "Review only")}</small>
+              </button>
+            );
+          })}
         </div>
-        {active?.pdfUrl ? <iframe title={active.fileName} src={active.pdfUrl} /> : <div className="empty">PDF unavailable</div>}
+        {completed ? (
+          active?.pdfUrl ? <iframe title={active.fileName} src={active.pdfUrl} /> : <div className="empty">PDF unavailable</div>
+        ) : active?.pdfUrl ? (
+          <SigningPdf document={active} values={values} onValue={setFieldValue} />
+        ) : <div className="empty">PDF unavailable</div>}
       </section>
 
       <aside className="sign-panel">
@@ -644,21 +877,29 @@ function SignContract({ token }) {
             <h2>Packet complete.</h2>
             <p>{contract.signedAt ? `Completed ${formatDate(contract.signedAt)}.` : "Everything is complete."}</p>
             <div className="completed-list">
-              {documents.map((doc) => <a key={doc.id} href={doc.pdfUrl} target="_blank" rel="noreferrer"><span>{doc.requiresSignature ? "✓" : "PDF"}</span><strong>{doc.fileName}</strong><small>{doc.requiresSignature ? "Signed copy" : "Review copy"}</small></a>)}
+              {documents.map((doc) => <a key={doc.id} href={doc.pdfUrl} target="_blank" rel="noreferrer"><span>{doc.requiresSignature ? "✓" : (doc.textFields?.length ? "T" : "PDF")}</span><strong>{doc.fileName}</strong><small>{doc.requiresSignature ? "Signed copy" : (doc.textFields?.length ? "Completed copy" : "Review copy")}</small></a>)}
             </div>
           </>
         ) : (
           <>
-            <span className="eyebrow">One signature</span>
-            <h2>Sign the packet once.</h2>
-            <p>Your signature will be placed onto all {requiredCount} PDF{requiredCount === 1 ? "" : "s"} marked as required. Review-only PDFs stay untouched.</p>
-            <div className="sign-summary"><span><strong>{requiredCount}</strong> signatures</span><span><strong>{documents.length - requiredCount}</strong> review only</span></div>
+            <span className="eyebrow">Finish the packet</span>
+            <h2>{signatureCount ? "Fill it in. Sign once." : "Fill it in. Send it back."}</h2>
+            <p>{allTextFields.length ? `${allTextFields.length} fillable field${allTextFields.length === 1 ? "" : "s"} are placed directly on the PDFs. ` : ""}{signatureCount ? `Your one signature will be placed on ${signatureCount} PDF${signatureCount === 1 ? "" : "s"}.` : "No signature is required for this packet."}</p>
+            <div className="sign-summary">
+              <span><strong>{signatureCount}</strong> signatures</span>
+              <span><strong>{requiredTextFields.length}</strong> required fields</span>
+              <span><strong>{documents.length}</strong> PDFs</span>
+            </div>
+            {activeFieldCount > 0 && <div className="field-progress"><strong>{active.fileName}</strong><span>{activeFieldCount} fillable field{activeFieldCount === 1 ? "" : "s"} on this document</span></div>}
             <label>Full name<input value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name" maxLength={120} /></label>
-            <SignaturePad onChange={setSignature} />
-            <label className="agree"><input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} /><span>I have reviewed this packet and agree to sign the documents marked as requiring my signature electronically.</span></label>
+            {signatureCount > 0 && <SignaturePad onChange={setSignature} />}
+            <label className="agree"><input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} /><span>{signatureCount ? "I have reviewed this packet, confirm the information I entered is accurate, and agree to sign the marked documents electronically." : "I have reviewed this packet and confirm the information I entered is accurate."}</span></label>
+            {missingRequired.length > 0 && <button type="button" className="missing-fields" onClick={jumpToMissing}>{missingRequired.length} required field{missingRequired.length === 1 ? "" : "s"} left · jump to next</button>}
             {error && <div className="error">{error}</div>}
-            <button className="primary sign-finish" onClick={sign} disabled={busy || !signature || !name.trim() || !agree}>{busy ? "Finishing packet..." : `Sign ${requiredCount} PDF${requiredCount === 1 ? "" : "s"} & finish`}</button>
-            <small className="fine-print">TideTracts records the signing time and creates completed copies of the signed PDFs. Some document types can have additional legal requirements.</small>
+            <button className="primary sign-finish" onClick={finish} disabled={busy || !name.trim() || !agree || (signatureCount > 0 && !signature)}>
+              {busy ? "Finishing packet..." : signatureCount ? "Fill, sign & finish" : "Submit completed packet"}
+            </button>
+            <small className="fine-print">TideTracts records the completion time and creates completed PDF copies with the entered fields. Some document types can have additional legal requirements.</small>
           </>
         )}
       </aside>
