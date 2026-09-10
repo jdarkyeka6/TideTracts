@@ -3,21 +3,20 @@ import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./styles.css";
 
-// The original TideTracts login field was type=email, but Wavo users normally
-// sign in with a username. Keep the login component small while making the
-// rendered control accept both forms.
+// Wavo users sign in with a username. The underlying auth layer still accepts
+// either a username or an email, but the UI should match the normal Wavo flow.
 function installWavoLoginFieldCompat() {
   const update = () => {
     const input = document.querySelector('.login-card input[autocomplete="email"], .login-card input[data-wavo-login]');
     if (!input) return;
     input.type = "text";
     input.autocomplete = "username";
-    input.placeholder = "Wavo username or email";
+    input.placeholder = "Username";
     input.dataset.wavoLogin = "true";
 
     const label = input.closest("label");
     if (label?.firstChild?.nodeType === Node.TEXT_NODE) {
-      label.firstChild.nodeValue = "Wavo username or email";
+      label.firstChild.nodeValue = "Username";
     }
   };
 
