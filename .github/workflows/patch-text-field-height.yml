@@ -1,0 +1,49 @@
+name: Patch text field height
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/patch-text-field-height.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Add text field height control
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          app = Path('src/App.jsx')
+          text = app.read_text()
+          old = '''          <label className="field-width">\n            <span>Width</span>\n            <input type="range" min="0.12" max="0.8" step="0.02" value={selectedText.width || DEFAULT_TEXT_FIELD.width} onChange={(e) => patchTextField(selectedText.id, { width: Number(e.target.value) })} />\n          </label>\n          <label className="required-switch">'''
+          new = '''          <label className="field-width">\n            <span>Width</span>\n            <input type="range" min="0.12" max="0.8" step="0.02" value={selectedText.width || DEFAULT_TEXT_FIELD.width} onChange={(e) => patchTextField(selectedText.id, { width: Number(e.target.value) })} />\n          </label>\n          <label className="field-height">\n            <span>Height</span>\n            <input type="range" min="0.015" max="0.15" step="0.005" value={selectedText.height || DEFAULT_TEXT_FIELD.height} onChange={(e) => { const height = Number(e.target.value); patchTextField(selectedText.id, { height, y: Math.min(Number(selectedText.y || 0), 1 - height) }); }} />\n          </label>\n          <label className="required-switch">'''
+          if old not in text:
+              raise SystemExit('Could not find text field width settings block')
+          app.write_text(text.replace(old, new, 1))
+
+          css = Path('src/text-fields.css')
+          c = css.read_text()
+          c = c.replace('grid-template-columns:minmax(160px,1fr) 120px auto auto', 'grid-template-columns:minmax(150px,1fr) 105px 105px auto auto', 1)
+          c = c.replace('min-height:18px!important', 'min-height:10px!important', 1)
+          c = c.replace('@media(max-width:900px){.text-field-settings{grid-template-columns:1fr 110px}.text-field-settings .remove-field{grid-column:2}', '@media(max-width:900px){.text-field-settings{grid-template-columns:1fr 1fr}.text-field-settings .remove-field{grid-column:auto}', 1)
+          css.write_text(c)
+
+          Path('.github/workflows/patch-text-field-height.yml').unlink()
+          PY
+      - name: Commit patch
+        shell: bash
+        run: |
+          git config user.name "TideTracts Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/App.jsx src/text-fields.css .github/workflows/patch-text-field-height.yml
+          git commit -m "Add adjustable text field height"
+          git push origin HEAD:main
