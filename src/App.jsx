@@ -566,6 +566,17 @@ function NewContract({ user }) {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [saveStatus, documents, title]);
 
+  // Update save status display every second
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // Force re-render to update "Last saved X minutes ago"
+      if (lastSaved && saveStatus === "saved") {
+        setLastSaved((prev) => prev); // Trigger re-render
+      }
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [lastSaved, saveStatus]);
+
   async function createContract() {
     if (!user || !documents.length || !title.trim()) return;
     if (!actionable) return setError("Add at least one signature or text field. A packet with nothing to do is just a folder wearing a suit.");
@@ -765,10 +776,117 @@ function NewContract({ user }) {
   );
 }
 
+function ResizableField({ field, containerWidth, containerHeight, onUpdate, label }) {
+  const [isDragging, setIsDragging] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const fieldRef = useRef(null);
+
+  const handleMouseDown = (e) => {
+    if (e.target.closest('.resize-handle')) return;
+    setIsDragging(true);
+    const rect = fieldRef.current.getBoundingClientRect();
+    setDragOffset({
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+    });
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDragging && !isResizing) return;
+    if (isDragging) {
+      const newX = (e.clientX - dragOffset.x) / containerWidth;
+      const newY = (e.clientY - dragOffset.y) / containerHeight;
+      onUpdate({
+        x: Math.max(0, Math.min(1, newX)),
+        y: Math.max(0, Math.min(1, newY)),
+      });
+    }
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+    setIsResizing(false);
+  };
+
+  const handleResizeMouseDown = (corner, e) => {
+    e.stopPropagation();
+    setIsResizing(true);
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startField = { ...field };
+
+    const handleResizeMove = (moveEvent) => {
+      const deltaX = (moveEvent.clientX - startX) / containerWidth;
+      const deltaY = (moveEvent.clientY - startY) / containerHeight;
+      let newField = { ...startField };
+      if (corner.includes('right')) {
+        newField.width = Math.max(0.05, Math.min(1 - newField.x, startField.width + deltaX));
+      }
+      if (corner.includes('bottom')) {
+        newField.height = Math.max(0.02, Math.min(1 - newField.y, startField.height + deltaY));
+      }
+      if (corner.includes('left')) {
+        const newWidth = startField.width - deltaX;
+        if (newWidth > 0.05) {
+          newField.x = startField.x + deltaX;
+          newField.width = newWidth;
+        }
+      }
+      if (corner.includes('top')) {
+        const newHeight = startField.height - deltaY;
+        if (newHeight > 0.02) {
+          newField.y = startField.y + deltaY;
+          newField.height = newHeight;
+        }
+      }
+      onUpdate(newField);
+    };
+
+    const handleResizeEnd = () => {
+      document.removeEventListener('mousemove', handleResizeMove);
+      document.removeEventListener('mouseup', handleResizeEnd);
+      setIsResizing(false);
+    };
+
+    document.addEventListener('mousemove', handleResizeMove);
+    document.addEventListener('mouseup', handleResizeEnd);
+  };
+
+  return (
+    <div
+      ref={fieldRef}
+      className={`resizable-field ${isDragging ? 'dragging' : ''} ${isResizing ? 'resizing' : ''}`}
+      style={{
+        left: `${field.x * 100}%`,
+        top: `${field.y * 100}%`,
+        width: `${field.width * 100}%`,
+        height: `${field.height * 100}%`,
+      }}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+      title={label || 'Drag to move, drag corners to resize'}
+    >
+      {label && <div className="field-label">{label}</div>}
+      <div className="resize-handle corner top-left" onMouseDown={(e) => handleResizeMouseDown('top-left', e)} />
+      <div className="resize-handle corner top-right" onMouseDown={(e) => handleResizeMouseDown('top-right', e)} />
+      <div className="resize-handle corner bottom-left" onMouseDown={(e) => handleResizeMouseDown('bottom-left', e)} />
+      <div className="resize-handle corner bottom-right" onMouseDown={(e) => handleResizeMouseDown('bottom-right', e)} />
+      <div className="resize-handle edge top" onMouseDown={(e) => handleResizeMouseDown('top', e)} />
+      <div className="resize-handle edge bottom" onMouseDown={(e) => handleResizeMouseDown('bottom', e)} />
+      <div className="resize-handle edge left" onMouseDown={(e) => handleResizeMouseDown('left', e)} />
+      <div className="resize-handle edge right" onMouseDown={(e) => handleResizeMouseDown('right', e)} />
+    </div>
+  );
+}
+
 function SignaturePad({ onChange }) {
   const canvasRef = useRef(null);
   const drawing = useRef(false);
   const [height, setHeight] = useState(175);
+  const [key, setKey] = useState(0); // Force re-render on height change
   const sizePresets = [
     { label: "Compact", value: 120 },
     { label: "Medium", value: 175 },
@@ -778,6 +896,8 @@ function SignaturePad({ onChange }) {
 
   useEffect(() => {
     const canvas = canvasRef.current;
+    if (!canvas) return;
+    
     const resize = () => {
       const rect = canvas.getBoundingClientRect();
       const ratio = Math.max(1, window.devicePixelRatio || 1);
@@ -790,16 +910,18 @@ function SignaturePad({ onChange }) {
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
       ctx.strokeStyle = "#10213a";
-      if (old && old !== "data:,") {
+      if (old && old !== "data:," && old.length > 100) {
         const img = new Image();
         img.onload = () => ctx.drawImage(img, 0, 0, rect.width, rect.height);
         img.src = old;
       }
     };
-    resize();
+    
+    // Small delay to ensure DOM has updated
+    setTimeout(resize, 0);
     window.addEventListener("resize", resize);
     return () => window.removeEventListener("resize", resize);
-  }, [height]);
+  }, [height, key]);
 
   function point(e) {
     const rect = canvasRef.current.getBoundingClientRect();
